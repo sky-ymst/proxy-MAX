@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>暗号化埋め込み（typingerz.com）</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #status { font-size: 12px; color: #888; padding: 8px; background: #222; }
+  #log { font-size: 11px; color: #4a90d9; padding: 4px 8px; background: #111; font-family: monospace; }
+  iframe { width: 100%; height: calc(100vh - 70px); border: none; display: block; }
+</style>
+</head>
+<body>
+  <div id="status">復号中...</div>
+  <div id="log"></div>
+  <iframe id="view" title="typingerz.com"></iframe>
+
+<script>
+// ここに埋め込まれているのは元URLではなく5層暗号化されたバイト列です
+const ENCRYPTED = {
+  payload: "iW7+DpxVUE/Wj7nh/xwc5/tjlAXeMn37H2xayUnx43fmyH7H40Wtpi6g+iEx+qfXV5NCHqDVVDxorLMgUC6gTFuJmn7e7ByhXmyM74+znWA+E/5B",
+  xorKey: "Qi8n8tSfGTEXhYgZsT6rCw==",
+  keyA: "doe7qINUFAkJNOzdQ9UjD9A3UQq4OLmvvAQjsFwfttY=",
+  keyB: "ErGTQgztbxA/nzDHdway6yLl70BaDuMgU7VKk0XOFFo="
+};
+
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const view = document.getElementById('view');
+
+function log(msg) {
+  logEl.textContent += msg + '  ';
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function xorBytes(buf, key) {
+  const out = new Uint8Array(buf.length);
+  for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ key[i % key.length];
+  return out;
+}
+
+async function aesDecrypt(buf, keyBytes) {
+  const iv = buf.slice(0, 12);
+  const tag = buf.slice(12, 28);
+  const data = buf.slice(28);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const combined = new Uint8Array(data.length + tag.length);
+  combined.set(data, 0);
+  combined.set(tag, data.length);
+  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, combined);
+  return new Uint8Array(plainBuf);
+}
+
+async function decryptURL() {
+  let buf = base64ToBytes(ENCRYPTED.payload);
+  log('層5→AES解除');
+
+  // 層5を戻す
+  buf = await aesDecrypt(buf, base64ToBytes(ENCRYPTED.keyB));
+  log('層4→AES解除');
+
+  // 層4を戻す
+  buf = await aesDecrypt(buf, base64ToBytes(ENCRYPTED.keyA));
+  log('層3→XOR解除');
+
+  // 層3を戻す（XOR）
+  buf = xorBytes(buf, base64ToBytes(ENCRYPTED.xorKey));
+  log('層2→Base64解除');
+
+  // 層2を戻す（Base64文字列 → デコード）
+  const b64Str = new TextDecoder('utf-8').decode(buf);
+  const decodedStr = atob(b64Str);
+  log('層1→文字列反転を解除');
+
+  // 層1を戻す（文字列反転）
+  const original = decodedStr.split('').reverse().join('');
+
+  return original;
+}
+
+async function main() {
+  try {
+    const url = await decryptURL();
+    statusEl.textContent = '復号完了: ' + url;
+    view.src = url;
+  } catch (err) {
+    statusEl.textContent = '復号エラー: ' + err.message;
+  }
+}
+
+main();
+</script>
+</body>
+</html>
