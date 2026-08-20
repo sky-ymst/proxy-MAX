@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ミニブラウザプロキシ - ホーム</title>
+<style>
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: system-ui, sans-serif;
+    background: #f4f5f7;
+    color: #222;
+  }
+  .wrap {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 32px 20px;
+  }
+  h1 {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+  p.desc {
+    font-size: 13px;
+    color: #666;
+    margin-top: 0;
+    margin-bottom: 24px;
+  }
+  .site-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .site-btn {
+    display: block;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    text-decoration: none;
+    color: #222;
+    font-size: 14px;
+    transition: background 0.15s;
+  }
+  .site-btn:hover {
+    background: #eef4fc;
+    border-color: #4a90d9;
+  }
+  .site-btn .host {
+    font-weight: bold;
+  }
+  .empty {
+    font-size: 13px;
+    color: #999;
+    padding: 12px;
+    background: #fff;
+    border: 1px dashed #ccc;
+    border-radius: 8px;
+  }
+  .manual {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .manual label {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+  }
+  .manual-row {
+    display: flex;
+    gap: 8px;
+  }
+  #manualInput {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+  }
+  #manualBtn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    background: #4a90d9;
+    color: #fff;
+    cursor: pointer;
+  }
+  #manualStatus {
+    font-size: 12px;
+    color: #c0392b;
+    margin-top: 8px;
+    min-height: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ミニブラウザプロキシ</h1>
+  <p class="desc">下のサイトをタップすると、多重暗号化を通して表示されます。</p>
+
+  <div id="siteList" class="site-list">
+    <div class="empty">読み込み中...</div>
+  </div>
+
+  <div class="manual">
+    <label for="manualInput">URLを直接入力する場合</label>
+    <div class="manual-row">
+      <input id="manualInput" type="text" placeholder="https://example.hatenablog.com">
+      <button id="manualBtn">開く</button>
+    </div>
+    <div id="manualStatus"></div>
+  </div>
+</div>
+
+<script>
+const siteList = document.getElementById('siteList');
+const manualInput = document.getElementById('manualInput');
+const manualBtn = document.getElementById('manualBtn');
+const manualStatus = document.getElementById('manualStatus');
+
+let allowedHosts = [];
+
+async function loadHosts() {
+  try {
+    const res = await fetch('/api/allowed-hosts');
+    const data = await res.json();
+    allowedHosts = data.hosts || [];
+
+    if (allowedHosts.length === 0) {
+      siteList.innerHTML = '<div class="empty">許可されたサイトが登録されていません</div>';
+      return;
+    }
+
+    siteList.innerHTML = '';
+    allowedHosts.forEach((host) => {
+      const url = 'https://' + host;
+      const a = document.createElement('a');
+      a.className = 'site-btn';
+      a.href = 'embed.html?url=' + encodeURIComponent(url);
+      a.innerHTML = '<span class="host">' + host + '</span>';
+      siteList.appendChild(a);
+    });
+  } catch (err) {
+    siteList.innerHTML = '<div class="empty">読み込みに失敗しました</div>';
+  }
+}
+
+function normalizeHost(input) {
+  try {
+    const url = input.startsWith('http') ? input : 'https://' + input;
+    return new URL(url).hostname;
+  } catch (e) {
+    return null;
+  }
+}
+
+manualBtn.addEventListener('click', () => {
+  const raw = manualInput.value.trim();
+  if (!raw) return;
+
+  const host = normalizeHost(raw);
+  if (!host || !allowedHosts.includes(host)) {
+    manualStatus.textContent = '許可されていないホストです（許可: ' + allowedHosts.join(', ') + '）';
+    return;
+  }
+
+  manualStatus.textContent = '';
+  const url = raw.startsWith('http') ? raw : 'https://' + raw;
+  location.href = 'embed.html?url=' + encodeURIComponent(url);
+});
+
+manualInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') manualBtn.click();
+});
+
+loadHosts();
+</script>
+</body>
+</html>
