@@ -1,155 +1,111 @@
-/**
- * yamatoyagi.hatenablog.com 専用 実験的プロキシサーバー
- *
- * 【重要な前提】
- * これは実用的なセキュリティ強化を目的としたものではなく、
- * 「多重暗号化の仕組みを体験・理解する」ための実験用実装です。
- * 復号鍵はクライアントにそのまま渡されるため、暗号強度としての
- * 実効性はほぼありません(詳細はREADME.md参照)。
- *
- * 構成:
- *   GET /            -> public/embed.html を返す(iframeに埋め込む対象ページ)
- *   GET /api/page     -> トップページを多重暗号化してJSONで返す
- *   GET /api/page?path=/entry/xxx -> 指定パスのページを多重暗号化して返す
- *   GET /asset*       -> 画像・CSS・JS等の静的アセットをそのまま中継
- *
- * 暗号化の階層 (/api/page が返すデータ):
- *   1層目: HTTPS                          (Render/ブラウザ間で自動的に有効)
- *   2層目: AES-256-GCM (鍵A)              (HTML全体を暗号化)
- *   3層目: AES-256-GCM (鍵B)              (2層目の暗号文をさらに暗号化)
- *   4層目: XORストリーム暗号 (鍵C)         (3層目の暗号文をさらに難読化)
- *
- * ブラウザ側 (public/embed.html) では 4層目→3層目→2層目 の順に復号し、
- * 得られたHTMLを内部iframeに srcdoc として描画します。
- */
-
 const express = require('express');
-const fetch = require('node-fetch');
-const cheerio = require('cheerio');
 const crypto = require('crypto');
-const path = require('path');
+const cheerio = require('cheerio');
+const fetch = require('node-fetch');
 
 const app = express();
-const TARGET_ORIGIN = 'https://yamatoyagi.hatenablog.com';
-const PORT = process.env.PORT || 3000;
+app.use(express.static('public'));
 
-// ---- 各層の鍵をサーバー起動時に生成 ----
-const KEY_A = crypto.randomBytes(32); // 2層目 AES鍵
-const KEY_B = crypto.randomBytes(32); // 3層目 AES鍵
-const KEY_C = crypto.randomBytes(32); // 4層目 XORストリーム鍵
+// 実験目的：このプロキシで許可するホスト（自分のサイトのみ）
+const ALLOWED_HOSTS = [
+  'yamatoyagi.hatenablog.com',
+  'orekou.net',  
+  'typingerz.com'
+];
 
-// ---- AES-256-GCM 暗号化 ----
-// 出力形式: iv(12byte) + authTag(16byte) + 暗号文
-function aesEncrypt(plainBuffer, key) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const encrypted = Buffer.concat([cipher.update(plainBuffer), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return Buffer.concat([iv, authTag, encrypted]);
-}
-
-// ---- XORストリーム暗号 ----
-function xorStream(buffer, key) {
-  const out = Buffer.alloc(buffer.length);
-  for (let i = 0; i < buffer.length; i++) {
-    out[i] = buffer[i] ^ key[i % key.length];
-  }
+// ---------- 多重暗号化ヘルパー ----------
+function xorEncrypt(buf, key) {
+  const out = Buffer.alloc(buf.length);
+  for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ key[i % key.length];
   return out;
 }
 
-// ---- 対象サイトのHTMLを取得し、リンク/アセットパスを自サーバー経由に書き換え ----
-async function fetchAndRewrite(pathAndQuery) {
-  const targetUrl = TARGET_ORIGIN + pathAndQuery;
-  const res = await fetch(targetUrl, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ExperimentalProxy/1.0)' }
-  });
-  const html = await res.text();
-  const $ = cheerio.load(html);
-
-  // 記事内リンク(相対パス)を /api/page?path=... 経由に書き換え
-  $('a[href^="/"]').each((_, el) => {
-    const href = $(el).attr('href');
-    if (href) $(el).attr('href', '#');
-    if (href) $(el).attr('data-nav-path', href);
-  });
-  $('a[href^="' + TARGET_ORIGIN + '"]').each((_, el) => {
-    const full = $(el).attr('href');
-    const rel = full.replace(TARGET_ORIGIN, '');
-    $(el).attr('href', '#');
-    $(el).attr('data-nav-path', rel);
-  });
-
-  // 画像・CSS・JSの絶対パスを /asset 経由に書き換え
-  $('img[src^="/"]').each((_, el) => {
-    $(el).attr('src', '/asset' + $(el).attr('src'));
-  });
-  $('link[href^="/"]').each((_, el) => {
-    $(el).attr('href', '/asset' + $(el).attr('href'));
-  });
-  $('script[src^="/"]').each((_, el) => {
-    $(el).attr('src', '/asset' + $(el).attr('src'));
-  });
-
-  // 内部iframe内でリンククリック時に親へメッセージを送る小さなスクリプトを追加
-  $('body').append(`
-    <script>
-      document.addEventListener('click', function(e) {
-        var a = e.target.closest('a[data-nav-path]');
-        if (a) {
-          e.preventDefault();
-          window.parent.postMessage({ type: 'navigate', path: a.getAttribute('data-nav-path') }, '*');
-        }
-      });
-    </script>
-  `);
-
-  return $.html();
+function aesEncrypt(buf, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(buf), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  // iv(12) + tag(16) + 暗号文 の順で連結
+  return Buffer.concat([iv, tag, enc]);
 }
 
-// ---- 静的アセット(画像・CSS・JS)はそのまま中継 ----
-app.get('/asset*', async (req, res) => {
-  try {
-    const originalPath = req.originalUrl.replace(/^\/asset/, '');
-    const targetUrl = TARGET_ORIGIN + originalPath;
-    const upstream = await fetch(targetUrl);
-    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-    const buf = await upstream.buffer();
-    res.set('content-type', contentType);
-    res.send(buf);
-  } catch (err) {
-    res.status(502).send('アセット取得エラー: ' + err.message);
-  }
-});
+function multiEncrypt(plainText) {
+  const key1 = crypto.randomBytes(32);
+  const key2 = crypto.randomBytes(32);
+  const xorKey = crypto.randomBytes(16);
 
-// ---- 多重暗号化されたページデータをJSONで返す ----
+  let buf = Buffer.from(plainText, 'utf-8');
+  buf = aesEncrypt(buf, key1);   // 層1
+  buf = aesEncrypt(buf, key2);   // 層2
+  buf = xorEncrypt(buf, xorKey); // 層3
+
+  return {
+    payload: buf.toString('base64'),
+    key1: key1.toString('base64'),
+    key2: key2.toString('base64'),
+    xorKey: xorKey.toString('base64'),
+  };
+}
+
+// ---------- ページ取得API ----------
 app.get('/api/page', async (req, res) => {
+  const target = req.query.url;
+
+  if (!target || !/^https?:\/\//i.test(target)) {
+    return res.status(400).json({ error: 'urlクエリが不正です（http/httpsで始まる必要があります）' });
+  }
+
+  let parsed;
   try {
-    const pathAndQuery = req.query.path || '/';
-    const html = await fetchAndRewrite(pathAndQuery);
-    const plainBuffer = Buffer.from(html, 'utf-8');
+    parsed = new URL(target);
+  } catch (e) {
+    return res.status(400).json({ error: 'URLの形式が不正です' });
+  }
 
-    // 2層目 -> 3層目 -> 4層目 の順に暗号化を重ねる
-    const layer2 = aesEncrypt(plainBuffer, KEY_A);
-    const layer3 = aesEncrypt(layer2, KEY_B);
-    const layer4 = xorStream(layer3, KEY_C);
+  if (!ALLOWED_HOSTS.includes(parsed.hostname)) {
+    return res.status(403).json({ error: `許可されていないホストです（許可: ${ALLOWED_HOSTS.join(', ')}）` });
+  }
 
-    res.json({
-      encrypted: layer4.toString('base64'),
-      keys: {
-        keyA: KEY_A.toString('base64'),
-        keyB: KEY_B.toString('base64'),
-        keyC: KEY_C.toString('base64')
-      }
+  try {
+    const response = await fetch(target, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MiniBrowserProxy/1.0)' },
     });
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!contentType.includes('text/html')) {
+      // HTML以外（画像・CSS・JSなど）はそのまま中継
+      const buf = await response.buffer();
+      res.set('content-type', contentType);
+      return res.send(buf);
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    // 相対パスの解決先を元サイトにするbaseタグを挿入
+    $('head').prepend(`<base href="${parsed.origin}${parsed.pathname}">`);
+
+    // リンククリックを親フレーム（embed.html）に通知するスクリプトを注入
+    $('body').append(`
+      <script>
+        document.addEventListener('click', function (e) {
+          const a = e.target.closest('a[href]');
+          if (!a) return;
+          e.preventDefault();
+          try {
+            const resolved = new URL(a.getAttribute('href'), document.baseURI).href;
+            window.parent.postMessage({ type: 'navigate', url: resolved }, '*');
+          } catch (err) {}
+        });
+      </script>
+    `);
+
+    const encrypted = multiEncrypt($.html());
+    res.json(encrypted);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: '取得に失敗しました: ' + err.message });
   }
 });
 
-// ---- iframeに埋め込む本体ページ ----
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.listen(PORT, () => {
-  console.log(`Encrypted proxy running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
