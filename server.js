@@ -6,12 +6,9 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(express.static('public'));
 
-// 実験目的：このプロキシで許可するホスト（自分のサイトのみ）
-const ALLOWED_HOSTS = [
-  'yamatoyagi.hatenablog.com',
-  'orekou.net',  
-  'typingerz.com'
-];
+// 実験目的：このプロキシで許可するホスト一覧
+// ホストの追加・削除は allowed-hosts.json を編集するだけでOK（このファイルは触らなくてよい）
+const ALLOWED_HOSTS = require('./allowed-hosts.json');
 
 // ---------- 多重暗号化ヘルパー ----------
 function xorEncrypt(buf, key) {
@@ -46,6 +43,11 @@ function multiEncrypt(plainText) {
     xorKey: xorKey.toString('base64'),
   };
 }
+
+// ---------- 許可ホスト一覧API（index.htmlのホーム画面用） ----------
+app.get('/api/allowed-hosts', (req, res) => {
+  res.json({ hosts: ALLOWED_HOSTS });
+});
 
 // ---------- ページ取得API ----------
 app.get('/api/page', async (req, res) => {
