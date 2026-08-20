@@ -2,121 +2,98 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>暗号化プロキシビューワー(実験用)</title>
+<title>skyrox2</title>
 <style>
-  html, body { margin:0; padding:0; height:100%; }
-  #status {
-    font-family: sans-serif;
-    font-size: 13px;
-    color: #666;
-    padding: 6px 10px;
-    background: #f5f5f5;
-    border-bottom: 1px solid #ddd;
-  }
-  #content-frame {
-    width: 100%;
-    height: calc(100% - 30px);
-    border: none;
-  }
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #bar { display: flex; padding: 8px; background: #222; gap: 6px; }
+  #urlInput { flex: 1; padding: 8px; border-radius: 4px; border: none; }
+  #goBtn { padding: 8px 16px; border: none; border-radius: 4px; background: #4a90d9; color: #fff; cursor: pointer; }
+  #status { font-size: 12px; color: #888; padding: 4px 8px; }
+  iframe { width: 100%; height: calc(100vh - 56px); border: none; display: block; }
 </style>
 </head>
 <body>
-
-<div id="status">読み込み中...</div>
-<iframe id="content-frame"></iframe>
+  <div id="bar">
+    <input id="urlInput" type="text" value="https://yamatoyagi.hatenablog.com">
+    <button id="goBtn">移動</button>
+  </div>
+  <div id="status"></div>
+  <iframe id="view" title="proxied content"></iframe>
 
 <script>
-// ==============================
-// クライアント側の復号処理
-// サーバーが 2層目(AES-A) -> 3層目(AES-B) -> 4層目(XOR-C) の順で暗号化しているため
-// ここでは逆順(4層目 -> 3層目 -> 2層目)に復号する
-// ==============================
+const urlInput = document.getElementById('urlInput');
+const goBtn = document.getElementById('goBtn');
+const view = document.getElementById('view');
+const status = document.getElementById('status');
 
-function base64ToBuffer(b64) {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-function xorDecrypt(bytes, keyBytes) {
-  const out = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    out[i] = bytes[i] ^ keyBytes[i % keyBytes.length];
-  }
+function xorDecrypt(buf, key) {
+  const out = new Uint8Array(buf.length);
+  for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ key[i % key.length];
   return out;
 }
 
-// AES-256-GCM復号 (Web Crypto API使用)
-// 入力形式: [iv(12byte)] + [authTag(16byte)] + [暗号文]
-async function aesDecrypt(bytes, rawKeyBytes) {
-  const iv = bytes.slice(0, 12);
-  const authTag = bytes.slice(12, 28);
-  const ciphertext = bytes.slice(28);
-
-  // Web Crypto の AES-GCM は 暗号文+authTag を連結して渡す仕様
-  const combined = new Uint8Array(ciphertext.length + authTag.length);
-  combined.set(ciphertext, 0);
-  combined.set(authTag, ciphertext.length);
-
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw', rawKeyBytes, { name: 'AES-GCM' }, false, ['decrypt']
-  );
-
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv },
-    cryptoKey,
-    combined
-  );
-
-  return new Uint8Array(decrypted);
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
 
-async function loadAndDecrypt(pagePath) {
-  const statusEl = document.getElementById('status');
-  statusEl.textContent = '暗号化データを取得中...';
+async function aesDecrypt(buf, keyBytes) {
+  const iv = buf.slice(0, 12);
+  const tag = buf.slice(12, 28);
+  const data = buf.slice(28);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const combined = new Uint8Array(data.length + tag.length);
+  combined.set(data, 0);
+  combined.set(tag, data.length);
+  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, combined);
+  return new Uint8Array(plainBuf);
+}
 
-  const apiUrl = '/api/page?path=' + encodeURIComponent(pagePath || '/');
-  const res = await fetch(apiUrl);
-  const data = await res.json();
+async function loadPage(url) {
+  status.textContent = '読み込み中...';
+  try {
+    const res = await fetch('/api/page?url=' + encodeURIComponent(url));
+    const data = await res.json();
 
-  if (data.error) {
-    statusEl.textContent = 'エラー: ' + data.error;
-    return;
+    if (data.error) {
+      status.textContent = 'エラー: ' + data.error;
+      return;
+    }
+
+    let buf = base64ToBytes(data.payload);
+    const xorKey = base64ToBytes(data.xorKey);
+    const key2 = base64ToBytes(data.key2);
+    const key1 = base64ToBytes(data.key1);
+
+    buf = xorDecrypt(buf, xorKey);      // 層3を戻す
+    buf = await aesDecrypt(buf, key2);  // 層2を戻す
+    buf = await aesDecrypt(buf, key1);  // 層1を戻す
+
+    const html = new TextDecoder('utf-8').decode(buf);
+    view.srcdoc = html;
+    urlInput.value = url;
+    status.textContent = '表示中: ' + url;
+  } catch (err) {
+    status.textContent = '読み込みエラー: ' + err.message;
   }
-
-  const keyA = base64ToBuffer(data.keys.keyA);
-  const keyB = base64ToBuffer(data.keys.keyB);
-  const keyC = base64ToBuffer(data.keys.keyC);
-
-  statusEl.textContent = '層4(XOR)を復号中...';
-  let bytes = base64ToBuffer(data.encrypted);
-  bytes = xorDecrypt(bytes, keyC);
-
-  statusEl.textContent = '層3(AES-256-GCM)を復号中...';
-  bytes = await aesDecrypt(bytes, keyB);
-
-  statusEl.textContent = '層2(AES-256-GCM)を復号中...';
-  bytes = await aesDecrypt(bytes, keyA);
-
-  const html = new TextDecoder('utf-8').decode(bytes);
-
-  statusEl.textContent = '復号完了・表示中';
-
-  const iframe = document.getElementById('content-frame');
-  iframe.srcdoc = html;
 }
 
-// 記事内リンククリック時、内部iframeからのpostMessageを受けて再読み込み
-window.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'navigate') {
-    loadAndDecrypt(event.data.path);
+goBtn.addEventListener('click', () => loadPage(urlInput.value.trim()));
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadPage(urlInput.value.trim());
+});
+
+// 埋め込み内のリンククリックをここで受け取ってURLバーごと遷移
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'navigate' && e.data.url) {
+    loadPage(e.data.url);
   }
 });
 
-// 初回読み込み
-loadAndDecrypt('/');
+// 初回ロード
+loadPage(urlInput.value);
 </script>
-
 </body>
 </html>
