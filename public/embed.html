@@ -92,7 +92,12 @@ window.addEventListener('message', (e) => {
   }
 });
 
-// 初回ロード
+// 初回ロード（index.htmlから ?url=... で渡された場合はそちらを優先）
+const params = new URLSearchParams(location.search);
+const initialUrl = params.get('url');
+if (initialUrl) {
+  urlInput.value = initialUrl;
+}
 loadPage(urlInput.value);
 </script>
 </body>
