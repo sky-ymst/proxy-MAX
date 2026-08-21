@@ -7,8 +7,12 @@ const app = express();
 app.use(express.static('public'));
 
 // 実験目的：このプロキシで許可するホスト一覧
+// { host, mode } の配列。mode: "proxy"（サーバー側fetch+暗号化）/ "direct"（直接iframe）
 // ホストの追加・削除は allowed-hosts.json を編集するだけでOK（このファイルは触らなくてよい）
 const ALLOWED_HOSTS = require('./allowed-hosts.json');
+
+// proxyモードのホストだけを抽出（/api/page はこのモードのみ処理する）
+const PROXY_HOSTS = ALLOWED_HOSTS.filter((h) => h.mode === 'proxy').map((h) => h.host);
 
 // ---------- 多重暗号化ヘルパー ----------
 function xorEncrypt(buf, key) {
@@ -64,8 +68,8 @@ app.get('/api/page', async (req, res) => {
     return res.status(400).json({ error: 'URLの形式が不正です' });
   }
 
-  if (!ALLOWED_HOSTS.includes(parsed.hostname)) {
-    return res.status(403).json({ error: `許可されていないホストです（許可: ${ALLOWED_HOSTS.join(', ')}）` });
+  if (!PROXY_HOSTS.includes(parsed.hostname)) {
+    return res.status(403).json({ error: `プロキシ対象として許可されていないホストです（許可: ${PROXY_HOSTS.join(', ') || 'なし'}）` });
   }
 
   try {
