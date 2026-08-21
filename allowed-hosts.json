@@ -1,5 +1,4 @@
 [
-  "yamatoyagi.hatenablog.com",
-  "typingerz.com",
-  "bloxd.io"
+  { "host": "yamatoyagi.hatenablog.com", "mode": "proxy" },
+  { "host": "typingerz.com", "mode": "direct" }
 ]
