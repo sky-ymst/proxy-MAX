@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>ミニブラウザプロキシ - ホーム</title>
+<title>skyrox2</title>
 <style>
   html, body {
     margin: 0;
@@ -135,12 +135,13 @@ async function loadHosts() {
     }
 
     siteList.innerHTML = '';
-    allowedHosts.forEach((host) => {
-      const url = 'https://' + host;
+    allowedHosts.forEach((item) => {
+      const url = 'https://' + item.host;
+      const dest = item.mode === 'direct' ? 'embed-direct.html' : 'embed.html';
       const a = document.createElement('a');
       a.className = 'site-btn';
-      a.href = 'embed.html?url=' + encodeURIComponent(url);
-      a.innerHTML = '<span class="host">' + host + '</span>';
+      a.href = dest + '?url=' + encodeURIComponent(url);
+      a.innerHTML = '<span class="host">' + item.host + '</span>';
       siteList.appendChild(a);
     });
   } catch (err) {
@@ -162,14 +163,18 @@ manualBtn.addEventListener('click', () => {
   if (!raw) return;
 
   const host = normalizeHost(raw);
-  if (!host || !allowedHosts.includes(host)) {
-    manualStatus.textContent = '許可されていないホストです（許可: ' + allowedHosts.join(', ') + '）';
+  const matched = allowedHosts.find((item) => item.host === host);
+
+  if (!host || !matched) {
+    const hostNames = allowedHosts.map((item) => item.host).join(', ');
+    manualStatus.textContent = '許可されていないホストです（許可: ' + hostNames + '）';
     return;
   }
 
   manualStatus.textContent = '';
   const url = raw.startsWith('http') ? raw : 'https://' + raw;
-  location.href = 'embed.html?url=' + encodeURIComponent(url);
+  const dest = matched.mode === 'direct' ? 'embed-direct.html' : 'embed.html';
+  location.href = dest + '?url=' + encodeURIComponent(url);
 });
 
 manualInput.addEventListener('keydown', (e) => {
